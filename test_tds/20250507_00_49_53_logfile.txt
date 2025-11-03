@@ -1,0 +1,21 @@
+FLOX_processing_master started at 20250507_00_49_53
+data_path   = C:\Users\jpcc\Documents\FlexDisc\FLEXDISC_129\matlab_translation\_translation2/test_tds
+uncertainty = C:\Users\jpcc\Documents\FlexDisc\FLEXDISC_129\matlab_translation\_translation2/auxiliar_mat_files/uncertainty_FLOX_v2.mat
+cov         = C:\Users\jpcc\Documents\FlexDisc\FLEXDISC_129\matlab_translation\_translation2/auxiliar_mat_files/b06_invCOV_SIF_RHO_PARMS_L2RM.mat
+
+Processing file 1 of 3
+Incoming: C:\Users\jpcc\Documents\FlexDisc\FLEXDISC_129\matlab_translation\_translation2/test_tds\220715\Incoming_radiance_FLUO_100004.csv
+Reflected: C:\Users\jpcc\Documents\FlexDisc\FLEXDISC_129\matlab_translation\_translation2/test_tds\220715\Reflected_radiance_FLUO_100004.csv
+Finished file 1.
+
+Processing file 2 of 3
+Incoming: C:\Users\jpcc\Documents\FlexDisc\FLEXDISC_129\matlab_translation\_translation2/test_tds\220716\Incoming_radiance_FLUO_100007.csv
+Reflected: C:\Users\jpcc\Documents\FlexDisc\FLEXDISC_129\matlab_translation\_translation2/test_tds\220716\Reflected_radiance_FLUO_100007.csv
+Finished file 2.
+
+Processing file 3 of 3
+Incoming: C:\Users\jpcc\Documents\FlexDisc\FLEXDISC_129\matlab_translation\_translation2/test_tds\220717\Incoming_radiance_FLUO_100005.csv
+Reflected: C:\Users\jpcc\Documents\FlexDisc\FLEXDISC_129\matlab_translation\_translation2/test_tds\220717\Reflected_radiance_FLUO_100005.csv
+Finished file 3.
+
+FLOX_processing_master completed.
