@@ -8,6 +8,7 @@ import logging
 import warnings
 
 
+
 def _get_red_sif(wl, sif):
     """
     Extract red fluorescence peak at 684 nm.
@@ -158,7 +159,7 @@ def _reflectance_concatenation(
     return y
 
 
-def _compute_apparent_reflectance(x, sp, wvl):
+def _compute_reflectance(x, sp, wvl):
     """
     Compute apparent reflectance using spline interpolation.
 
@@ -231,7 +232,7 @@ def _compute_fluorescence(x, sp, wvl):
     return fluorescence
 
 
-def l2b_forward_model(x, wvl, sp, te, tes, lp, tup, ts):
+def l2b_forward_model(x, wvl, sp, Lin):
     """
     Level 2B forward model for atmospheric radiative transfer with fluorescence.
 
@@ -243,9 +244,8 @@ def l2b_forward_model(x, wvl, sp, te, tes, lp, tup, ts):
         Wavelength vector [nm]
     sp : Spline object
         Surface reflectance interpolator
-    te, tes, lp, tup, ts : numpy.ndarray
-        Atmospheric transmission and path parameters
 
+        
     Returns
     -------
     numpy.ndarray
@@ -253,25 +253,14 @@ def l2b_forward_model(x, wvl, sp, te, tes, lp, tup, ts):
 
     Notes
     -----
-    Implements: L_SIM = LP + (TE/π)·ρ + TUP·F + (TES/π)·ρ² + TS·F·ρ
-    Then inverts to get apparent reflectance using quadratic formula.
+    Modified to handle ground based spectral measurements from FLOX data specifics.
     """
-    rho = _compute_apparent_reflectance(x, sp, wvl)
+    rho = _compute_reflectance(x, sp, wvl)
 
     fluorescence = _compute_fluorescence(x, sp, wvl)
 
-    # Calculate L_SIM using element-wise operations
-    l_sim = (
-        lp
-        + (te / np.pi) * rho
-        + tup * fluorescence
-        + (tes / np.pi) * rho**2
-        + ts * fluorescence * rho
-    )
-
     # Calculate ARHO_SIM using quadratic formula
-    discriminant = te**2 - 4 * tes * np.pi * (lp - l_sim)
-    arho_sim = (-te + np.sqrt(discriminant)) / (2 * tes)
+    arho_sim = rho + fluorescence / Lin
 
     return arho_sim
 
@@ -425,7 +414,442 @@ def _analytical_barycenter(c, w, k, aw, wvl_min, wvl_max):
     return m
 
 
+#################################################################################
+
 def _l2b_regularized_cost_function_optimization(
+    wvl,
+    apparent_reflectance,
+    xa_mean,
+    atm_func,
+    sa,
+    sy,
+    lmb,
+    l2b_wavelength_grid,
+    max_iter=15,
+):
+    
+    # Define spline knots for surface reflectance
+    knots = np.array([
+        wvl[0],
+        wvl[0],
+        wvl[0],
+        wvl[0],
+        675.0000,
+        682.6000,
+        693.4500,
+        695.4500,
+        699.0333,
+        704.4500,
+        712.1000,
+        719.6833,
+        727.2667,
+        734.6333,
+        741.6167,
+        747.8333,
+        755.5000,
+        768.000,
+        wvl[-1],
+        wvl[-1],
+        wvl[-1],
+        wvl[-1]
+    ])
+
+    # Initialize B-spline for surface reflectance
+    sp = BSpline(knots, xa_mean[8:], 3)
+
+    # Set initial spline coefficients from prior mean
+    sp.c = xa_mean[8:] 
+
+    # Define cost function
+    def cost_function(fx, x):
+        c = (apparent_reflectance - fx).T @ sy @ (apparent_reflectance - fx) + g * (
+            x - xa_mean
+        ).T @ sa @ (x - xa_mean)
+        return c
+
+    # Define forward model and its Jacobian
+    def fw(x):
+        return l2b_forward_model(
+            x,
+            wvl,
+            sp,
+            Lin=atm_func["Lin"],
+        )
+
+    def jac(x):
+        return _jacobian_calculation(fw, x)
+
+
+    # --- Initialization ---
+    y   = apparent_reflectance
+    x0  = xa_mean.copy()   # initial state vector
+    x1  = xa_mean.copy()   # initial state vector + 1 iteration
+    n_x = x0.size          # number of state variables    
+    c_ex1 = 20
+    c_ex2 = 20
+    c_ex3 = 20        
+    D = np.eye(sa.shape[0]) # Identity matrix
+
+    # Initial forward model evaluation
+    fx0 = fw(x0)
+    k0 = jac(x0)
+    
+    # initialization debug arrays
+    x_iter       = np.full((n_x, max_iter + 1), np.nan)
+    c1y_iter     = np.full((max_iter + 1), np.nan)
+    c1x_iter     = np.full((max_iter + 1), np.nan)
+    lmb2_iter    = np.full((max_iter + 1), np.nan)
+    c_ex1_iter   = np.full((max_iter + 1), np.nan)
+    c_ex2_iter   = np.full((max_iter + 1), np.nan)
+    c_ex3_iter   = np.full((max_iter + 1), np.nan)
+    LMgamma_iter = np.full((max_iter + 1), np.nan)
+    fx_iter      = np.full((fx0.size, max_iter + 1), np.nan)
+    A_iter       = np.full((n_x, n_x, max_iter), np.nan)
+    K_iter       = np.full((wvl.size, n_x, max_iter), np.nan)
+    flag         = np.full((max_iter + 1), np.nan)
+
+
+    # COST FUNCTION
+    c0y = (y - fx0).T @ sy @ (y - fx0)
+    c0x = (x0 - xa_mean).T @ (lmb * sa) @ (x0 - xa_mean)
+    c0 = c0y + c0x
+
+    # Assign first iteration values
+    x_iter[:, 0]       = x0
+    c1y_iter[0]     = c0y
+    c1x_iter[0]     = c0x
+    lmb2_iter[0]    = 0
+    LMgamma_iter[0] = lmb
+    fx_iter[:, 0]      = fx0
+    flag[0]         = 1
+
+
+    # First rough estimation
+    idx_free = np.array([0, 3, 4] + list(range(8, n_x)))  
+
+    for iter in range(2):
+        # Reduce problem to free variables
+        k0_redu = k0[:, idx_free]
+        sa_redu = sa[np.ix_(idx_free, idx_free)]
+        x0_redu = x0[idx_free]
+
+        # Non-regularized update
+        Ci  = k0_redu.T @ sy @ k0_redu
+        rhs = k0_redu.T @ sy @ (y - fx0)
+        dx_redu = np.linalg.solve(Ci, rhs)
+        # dx_redu = np.linalg.lstsq(Ci, rhs, rcond=None)[0] # If the matrix is ill-conditioned and you prefer a least-squares solution:
+        x1[idx_free] = x0_redu + dx_redu
+
+        # Update Jacobian
+        k1 = jac(x1)
+        k1_redu = k1[:, idx_free]
+
+        sx_redu = np.linalg.inv(k1_redu.T @ sy @ k1_redu)
+        dx = xa_mean[idx_free] - x1[idx_free]
+        den = dx.T @ sa_redu @ sx_redu @ sa_redu @ dx
+        lmb_ECM = np.sqrt(len(idx_free) / den)
+
+        x1_reg = np.linalg.solve((np.linalg.inv(sx_redu) + lmb_ECM * sa_redu),
+                                (np.linalg.inv(sx_redu) @ x1[idx_free] + lmb_ECM * sa_redu @ xa_mean[idx_free]))
+
+        # Update free parameters
+        x1[idx_free] = x1_reg
+
+        # Evaluate model with new x1 and Jacobian
+        fx1_reg = fw(x1)
+        k1_reg  = jac(x1)
+
+        # Prepare for next iteration
+        x0 = x1.copy()
+        fx0 = fx1_reg.copy()
+        k0 = k1_reg.copy()
+
+    
+    # Reset for full iteration
+    xa = x1.copy()
+    x0 = xa_mean.copy()
+    x1 = x0.copy()
+    fx0 = fw(x0)
+    k0 = jac(x0)
+
+
+    # Full iteration loop
+    i = -1
+    LMgamma = 1e-3 * np.max(np.diag(k0.T @ sy @ k0))
+    
+    while (c_ex1 >= 1e-3 or c_ex2 >= 1e-3 or c_ex3 >= 1e-6) and i <= max_iter:
+        i += 1
+        Ci = k0.T @ sy @ k0 + LMgamma * D
+        x1 = x0 + np.linalg.solve(Ci, k0.T @ sy @ (y - fx0))
+
+        # Jacobian
+        k0 = jac(x1)
+
+        # ECM
+        sx = np.linalg.inv(LMgamma * D + k0.T @ sy @ k0)
+        dx = xa - x1
+        den = dx.T @ sa @ sx @ sa @ dx
+        if i <= 4:
+            lmb_ECM = np.sqrt(n_x / den)
+        lmb2_iter[i] = lmb_ECM
+
+        x1_reg = np.linalg.solve((np.linalg.inv(sx) + lmb_ECM * sa),
+                                (np.linalg.inv(sx) @ x1 + lmb_ECM * sa @ xa))
+        #x1_reg = np.linalg.inv(np.linalg.inv(sx) + lmb_ECM * sa) @ (np.linalg.inv(sx) @ x1 + lmb_ECM * sa @ xa)
+
+        fx1_reg = fw(x1_reg)
+        k1_reg = jac(x1_reg)
+
+        # Cost function
+        c1y = (y - fx1_reg).T @ sy @ (y - fx1_reg)
+        c1x = (x1_reg - xa).T @ (lmb_ECM * sa) @ (x1_reg - xa)
+        c1 = c1y + c1x
+
+        # Debug arrays
+        x_iter[:, i] = x1_reg
+        fx_iter[:, i] = fx1_reg
+        c1y_iter[i] = c1y
+        c1x_iter[i] = c1x
+
+
+        # Updates LMgamma
+        # LMgamma_method = 0  # Presse et al., x10
+        # LMgamma_method = 1  # TrustRegion
+        LMgamma_method = 2    # Geodesic
+
+        if LMgamma_method == 1:  # TrustRegion
+            if i == 1:
+                increase_count = 0
+
+            rho = compute_LM_gain_ratio(x0, x1, fx0, y, c0, c1, LMgamma, D, k0, Sy)
+
+            LMgamma, x1_reg, c1, fx1_reg, k1_reg, flag[i+1], skipIteration = LMgamma_update_TrustRegion(
+                rho, LMgamma, x0, x1_reg, c0, c1, fx0, fx1_reg, k0, k1_reg, increase_count
+            )
+
+        elif LMgamma_method == 2:  # Geodesic
+            rho = compute_LM_gain_ratio(x0, x1, fx0, y, c0, c1, LMgamma, D, k0, sy)
+
+            LMgamma, x1_reg, c1, fx1_reg, k1_reg, flag[i], skipIteration = LMgamma_update_Geodesic(
+                rho, LMgamma, x0, x1_reg, c0, c1, fx0, fx1_reg, k0, k1_reg
+            )
+
+        else:  # Press et al.
+            LMgamma, x1_reg, c1, fx1_reg, k1_reg, flag[i+1], skipIteration = LMgamma_update(
+                LMgamma, x0, x1_reg, c0, c1, fx0, fx1_reg, k0, k1_reg
+            )
+
+
+        # LMgamma update (placeholder)
+        LMgamma_iter[i] = LMgamma
+
+        # Posterior (only for debug)
+        sx = np.linalg.inv(lmb_ECM * sa + k1_reg.T @ sy @ k1_reg)
+        A_iter[:, :, i] = sx @ k1_reg.T @ sy @ k1_reg
+        K_iter[:, :, i] = k1_reg
+
+        # Convergence criteria
+        c_ex1 = np.linalg.norm(k1_reg.T @ (fx1_reg - fx0), 2) / (1 + c1)
+        c_ex2 = np.linalg.norm(x1_reg - x0, 2) / (1 + np.linalg.norm(x1_reg, 2))
+        c_ex3 = abs(c1 - c0) / (1 + c1)
+
+        c_ex1_iter[i] = c_ex1
+        c_ex2_iter[i] = c_ex2
+        c_ex3_iter[i] = c_ex3
+
+        # Update for next iteration
+        x0 = x1_reg.copy()
+        fx0 = fx1_reg.copy()
+        k0 = k1_reg.copy()
+        c0 = c1
+
+
+    sp.c = x1_reg[8:]
+    reflectance = sp(l2b_wavelength_grid)
+    sif = _sif_forward_model(x1_reg[:8].flatten(), l2b_wavelength_grid)
+
+
+    # Compute posterior uncertainty
+    sif_unc = MC_SIF_uncertainty_estimation(x1_reg, sx, l2b_wavelength_grid)
+
+
+    return reflectance, sif, sif_unc
+
+
+
+def compute_LM_gain_ratio(x0, x1, fx0, y, c0, c1, LMgamma, D, k0, Sy):
+    """
+    Computes the gain ratio (rho) for Levenberg-Marquardt update.
+
+    Authors:
+        Prof. Sergio Cogliati
+        Dr. Pietro Chierichetti
+        University of Milano-Bicocca
+        Department of Earth and Environmental Sciences (DISAT)
+        Email: sergio.cogliati@unimib.it
+
+    Inputs:
+        x0       - Current parameter vector
+        x1       - Proposed updated parameter vector
+        fx0      - Model output at x0
+        y        - Observed data
+        c0       - Cost at x0
+        c1       - Cost at x1
+        LMgamma  - Damping parameter
+        D        - Damping matrix
+        k0       - Jacobian matrix at x0
+        Sy       - Weighting matrix for observations
+
+    Output:
+        rho      - Gain ratio used to evaluate the quality of the update
+    """
+
+    LHS = x1 - x0
+    J = k0
+
+    # Predicted cost reduction
+    pred_red = 0.5 * (LHS.T @ (LMgamma * D @ LHS + J.T @ Sy @ (y - fx0)))
+
+    # Avoid division by very small values
+    if abs(pred_red) < 1e-12:
+        pred_red = np.sign(pred_red) * 1e-12
+
+    # Compute gain ratio
+    rho = (c0 - c1) / pred_red
+
+    # Clamp rho to avoid extreme values
+    rho = max(min(rho, 10), -1)
+
+    return rho
+
+
+def LMgamma_update_Geodesic(rho, LMgamma, x0, x1_reg, c0, c1, fx0, fx1_reg, k0, k1_reg):
+    """
+    Updates LMgamma based on gain ratio rho in geodesic root square.
+
+    Authors:
+        Prof. Sergio Cogliati
+        Dr. Pietro Chierichetti
+        University of Milano-Bicocca
+        Department of Earth and Environmental Sciences (DISAT)
+        Email: sergio.cogliati@unimib.it
+
+    Inputs:
+        rho        - Gain ratio
+        LMgamma    - Current damping parameter
+        x0         - Current parameter vector
+        x1_reg     - Previous value of x1_reg (preserved if update accepted)
+        c0         - Current cost
+        c1         - Previous value of c1 (preserved if update accepted)
+        fx0        - Model output at x0
+        fx1_reg    - Previous value of fx1_reg
+        k0         - Jacobian at x0
+        k1_reg     - Previous value of k1_reg
+
+    Outputs:
+        LMgamma    - Updated damping parameter
+        x1_reg     - Reset parameter vector if update rejected
+        c1         - Reset cost if update rejected
+        fx1_reg    - Reset model output if update rejected
+        k1_reg     - Reset Jacobian if update rejected
+        flag       - Update status (1 accepted, 0 rejected)
+        skipIteration - Boolean indicating if iteration should be skipped
+    """
+
+    if rho > 0:
+        LMgamma = LMgamma / (1 + rho)
+        flag = 1
+        skipIteration = 0
+    else:
+        LMgamma = LMgamma * 2
+        x1_reg = x0
+        c1 = c0
+        fx1_reg = fx0
+        k1_reg = k0
+        flag = 0
+        skipIteration = 1
+
+    # Numerical safety: clip LMgamma within bounds
+    LMgamma = max(min(LMgamma, 1e10), 1e-10)
+
+    return LMgamma, x1_reg, c1, fx1_reg, k1_reg, flag, skipIteration
+
+
+def MC_SIF_uncertainty_estimation(x, sx, wvl):
+    """
+    Monte-Carlo approach for uncertainty estimation
+
+    Args:
+        x (np.ndarray): parameters
+        sx (np.ndarray): retrieval covariance matrix
+        wvl (np.ndarray): wavelengths
+
+    Returns:
+        np.ndarray: standard deviation of SIF across the Monte Carlo runs at each wavelength
+    """
+
+    def std_keep_95(run_matrix):
+        m = np.array(run_matrix, dtype=float)
+        low = np.nanpercentile(m, 2.5, axis=1, keepdims=True)
+        high = np.nanpercentile(m, 97.5, axis=1, keepdims=True)
+        mask = (m >= low) & (m <= high)
+        filtered = np.where(mask, m, np.nan)
+        return np.nanstd(filtered, axis=1)
+    
+
+    # nearest PSD
+    def make_psd(matrix):
+        eigvals, eigvecs = np.linalg.eigh(matrix)
+        eigvals[eigvals < 0] = 0
+        return eigvecs @ np.diag(eigvals) @ eigvecs.T
+
+
+    # mu = first 8 elements of x
+    mu = x[:8].astype(float)
+
+    # Round Sx to 6 decimals
+    Sxx = np.round(sx, 6)
+
+    # Extract top-left 8x8 submatrix
+    Sigma = Sxx[:8, :8]
+
+    Sigma = make_psd(Sigma)
+
+
+    # Set random seed for reproducibility
+    np.random.seed(0)
+    R = np.random.multivariate_normal(mean=mu, cov=Sigma, size=300)
+
+    # For each sample row, build a SIF spectrum
+    n_wvl = wvl.shape[0]
+    run_matrix = np.empty((n_wvl, R.shape[0]), dtype=float)
+    run_matrix[:] = np.nan
+    
+    for mc_run  in range(R.shape[0]):
+        try:
+            run_matrix[:, mc_run ] = _compute_fluorescence(R[mc_run , :], np.nan, wvl)
+        except Exception:
+            # Assegna NaN alla colonna
+            run_matrix[:, mc_run ] = np.nan
+
+    # Standard deviation across runs (axis=1 for each wavelength)
+    std_dev = std_keep_95(run_matrix)
+
+    return std_dev
+
+######################################################################
+
+def _jacobian_calculation(func, x, epsilon=np.float64(1e-6)):
+    num_parameters = len(x)
+    x_perturbed = np.tile(x, (num_parameters + 1, 1)) + np.concatenate(
+        [epsilon * np.eye(num_parameters), np.zeros((1, num_parameters))]
+    )
+    y = func(x_perturbed)
+    return ((y[:-1, :] - y[-1, :]) * (1 / epsilon)).T
+
+
+
+def _l2b_regularized_cost_function_optimization_OLD(
     wvl,
     apparent_reflectance,
     xa_mean,
@@ -437,63 +861,67 @@ def _l2b_regularized_cost_function_optimization(
     max_iter=15,
     ftol=1e-4,
 ):
-    knots = np.array(
-        [
-            wvl[0],
-            wvl[0],
-            wvl[0],
-            wvl[0],
-            675.0000,
-            682.6000,
-            693.4500,
-            695.4500,
-            699.0333,
-            704.4500,
-            708.5,
-            712.1000,
-            734.6333,
-            738.5,
-            743.5,
-            747.8333,
-            755.5000,
-            771.000,
-            wvl[-1],
-            wvl[-1],
-            wvl[-1],
-            wvl[-1],
-        ]
-    )
+    
+    # Define spline knots for surface reflectance
+    knots = np.array([
+        wvl[0],
+        wvl[0],
+        wvl[0],
+        wvl[0],
+        675.0000,
+        682.6000,
+        693.4500,
+        695.4500,
+        699.0333,
+        704.4500,
+        712.1000,
+        719.6833,
+        727.2667,
+        734.6333,
+        741.6167,
+        747.8333,
+        755.5000,
+        768.000,
+        wvl[-1],
+        wvl[-1],
+        wvl[-1],
+        wvl[-1]
+    ])
+
+    # Initialize B-spline for surface reflectance
     sp = BSpline(knots, xa_mean[8:], 3)
 
-    sp.c = xa_mean[8:]  # update weights
+    # Set initial spline coefficients from prior mean
+    sp.c = xa_mean[8:] 
 
+    # Define cost function
     def cost_function(fx, x):
         c = (apparent_reflectance - fx).T @ sy @ (apparent_reflectance - fx) + g * (
             x - xa_mean
         ).T @ sa @ (x - xa_mean)
         return c
 
+    # Define forward model and its Jacobian
     def fw(x):
         return l2b_forward_model(
             x,
             wvl,
             sp,
-            te=atm_func["TE"],
-            tes=atm_func["TES"],
-            lp=atm_func["Lp0"],
-            tup=atm_func["T"],
-            ts=atm_func["TS"],
+            Lin=atm_func["Lin"],
         )
 
     def jac(x):
         return _jacobian_calculation(fw, x)
 
+    # Levenberg-Marquardt optimization
     lm_gamma = 0.1
 
+    # Initialization
     y = apparent_reflectance
     x0 = xa_mean.copy()
     x1 = xa_mean.copy()
 
+    # Initial forward model evaluation
     fx0 = fw(x0)
     k = jac(x0)
     c0 = (y - fx0) @ sy @ (y - fx0) + g * (x0 - xa_mean) @ sa @ (x0 - xa_mean)
@@ -521,7 +949,7 @@ def _l2b_regularized_cost_function_optimization(
             t2 = (
                 2
                 * (
-                    (np.sqrt(lm_gamma) * np.linalg.norm(np.eye(26) * (x1 - x0)))
+                    (np.sqrt(lm_gamma) * np.linalg.norm(np.eye(n_x) * (x1 - x0)))
                     / np.linalg.norm(y - fx0)
                 )
                 ** 2
@@ -542,12 +970,3 @@ def _l2b_regularized_cost_function_optimization(
     reflectance = sp(l2b_wavelength_grid)
     sif = _sif_forward_model(x1[:8].flatten(), l2b_wavelength_grid)
     return reflectance, sif
-
-
-def _jacobian_calculation(func, x, epsilon=np.float64(1e-6)):
-    num_parameters = len(x)
-    x_perturbed = np.tile(x, (num_parameters + 1, 1)) + np.concatenate(
-        [epsilon * np.eye(num_parameters), np.zeros((1, num_parameters))]
-    )
-    y = func(x_perturbed)
-    return ((y[:-1, :] - y[-1, :]) * (1 / epsilon)).T

@@ -2,7 +2,7 @@ import numpy as np
 import os
 from scipy.io import loadmat
 from src.apply_PH_FLOX import apply_PH_FLOX
-from src.apply_SFM_FLOX_cov_sep import apply_SFM_FLOX_cov_sep
+from src.apply_SFM_FLOX_cov_sep import apply_SFM_FLOX_cov_sep, apply_SFM_FLOX_cov_sep_IPF
 
 
 def FLOX_processing(
@@ -98,6 +98,7 @@ def FLOX_processing(
     if app_ref_un_est is None:
         app_ref_un_est = np.zeros_like(app_ref)
 
+    """
     (fluo_sfm, ref_sfm, fluo_un_sfm,
      ref_un_sfm, wl_sfm,
      sif_r_max, sif_r_wl, sif_o2b,
@@ -112,7 +113,34 @@ def FLOX_processing(
          sifo2b=fluo_estimated_o2b,
          path_aux=aux_cov_path,
     )
+    """
 
+    # Perform SIF retrieval using FLEX-IPF algorithm adatped to FLOX data
+    (
+        fluo_sfm,        # Retrieved fluorescence spectrum
+        ref_sfm,         # Retrieved reflectance spectrum
+        fluo_un_sfm,     # Fluorescence uncertainty
+        ref_un_sfm,      # Reflectance uncertainty
+        wl_sfm,          # Wavelength grid for output
+        sif_r_max,       # Maximum SIF in red region
+        sif_r_wl,        # Wavelength of red SIF peak
+        sif_o2b,         # SIF at O₂-B band
+        sif_fr_max,      # Maximum SIF in far-red region
+        sif_fr_wl,       # Wavelength of far-red SIF peak
+        sif_o2a,         # SIF at O₂-A band
+        sif_int,         # Integrated SIF over spectrum
+        sif_o2a_un,      # Uncertainty at O₂-A
+        sif_o2b_un       # Uncertainty at O₂-B
+    ) = apply_SFM_FLOX_cov_sep_IPF(
+        inc_fluo_corr=inc_fluo,          # incident irradiance from Fluo spectrometer
+        app_ref=app_ref,                 # Apparent reflectance
+        app_ref_un=app_ref_un_est,       # Uncertainty of apparent reflectance
+        wl_l=wl_l,                       # Wavelength vector
+        sifo2a=fluo_estimated_o2a,       # Initial guess for O₂-A SIF
+        sifo2b=fluo_estimated_o2b,       # Initial guess for O₂-B SIF
+        path_aux=aux_cov_path            # Path to covariance matrix file
+    )
+    
     return (
         fluo_sfm, ref_sfm, fluo_un_sfm, ref_un_sfm, wl_sfm,
         sif_r_max, sif_r_wl, sif_o2b,

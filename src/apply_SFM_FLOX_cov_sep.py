@@ -5,8 +5,9 @@ from src.auxiliar.fg_sif_spectrum import fg_sif_spectrum
 from src.auxiliar.numeric_jacobian import numeric_jacobian
 from src.auxiliar.specfit_tayor_l2a_8parms_func_prox_sensing import specfit_tayor_l2a_8parms_func_prox_sensing
 from src.auxiliar.sif_fwmodel_8parms import sif_fwmodel_8parms
-from src.auxiliar.MC_SIF_uncertainty_estimation import MC_SIF_uncertainty_estimation
 from scipy.interpolate import make_lsq_spline
+#from src.auxiliar.MC_SIF_uncertainty_estimation import MC_SIF_uncertainty_estimation
+from src.FLOX_processing_IPF_functions import _l2b_regularized_cost_function_optimization
 
 
 def sif_parms_flox(wl, sif, sif_un):
@@ -61,6 +62,113 @@ def sif_parms_flox(wl, sif, sif_un):
 
     return (sif_r_max, sif_r_wl, sif_o2b, sif_fr_max,
             sif_fr_wl, sif_o2a, sif_int, sif_o2b_un, sif_o2a_un)
+
+def apply_SFM_FLOX_cov_sep_IPF(inc_fluo_corr, app_ref, app_ref_un, wl_l,
+                           sifo2a, sifo2b, path_aux):
+    """
+    Core spectral fitting method for FLOX data (single-thread, Rodgers LM approach).
+
+    Args:
+        inc_FLUO_corr (np.ndarray): incident radiance
+        app_ref (np.ndarray): apparent reflectance
+        app_ref_un (np.ndarray): reflectance uncertainties
+        wl_L (np.ndarray): wavelength vector
+        sifo2a (np.ndarray): initial guess arrays for O2-A SIF
+        sifo2b (np.ndarray): initial guess arrays for O2-B SIF
+        path_aux (str): path to .mat file with invCOV_SIF_RHO
+
+    Returns:
+        list[np.ndarray]: fluo_sfm, ref_sfm, fluo_un_sfm, ref_un_sfm, wv_out,
+            sif_r_max, sif_r_wl, sif_o2b,
+            sif_fr_max, sif_fr_wl, sif_o2a,
+            sif_int, sif_o2a_un, sif_o2b_un
+    """
+
+####################################
+
+    #  Load Inverse parameter covariance matrix
+    if not os.path.isfile(path_aux):
+        raise FileNotFoundError(f"Cannot find covariance file: {path_aux}")
+
+    with h5py.File(path_aux, 'r') as f:
+        if 'invCOV_SIF_RHO' not in f:
+            raise KeyError(
+                "invCOV_SIF_RHO not found in the provided netCDF file.")
+        sa = np.array(f['invCOV_SIF_RHO']).astype(float)
+        xa_mean = np.array(f['xa_mean']).astype(float).ravel()
+        
+    nparams = sa.shape[0]
+    if nparams < 9:
+        raise ValueError(
+            "invCOV_SIF_RHO matrix expected >= 26x26. Found smaller.")    
+
+    # Adjust covariance matrix values
+    sa[8:, :8] = 1e-15
+    sa[:8, 8:] = 1e-5
+    sa[0, 3] = 1e-15
+    sa[3, 0] = 1e-15
+    sa[:2, 3:] = 1e-15
+    sa[3:, :2] = 1e-15
+
+
+    # Initialize output arrays
+    n_wvl, n_spectra = inc_fluo_corr.shape
+
+    # to undersample the wavelength grid for L2B products
+    l2b_wavelength_grid = wl_l.copy()
+
+    fluo_sfm = np.full((n_wvl, n_spectra), np.nan, dtype=float)
+    ref_sfm = np.full((n_wvl, n_spectra), np.nan, dtype=float)
+    fluo_un_sfm = np.full((n_wvl, n_spectra), np.nan, dtype=float)
+    ref_un_sfm = np.full((n_wvl, n_spectra), np.nan, dtype=float)
+
+
+    # Main loop over the different spectra
+    for num_spec in range(n_spectra):
+        
+        # Build data covariance (diagonal from app_ref_un^2)
+        var_vec = (app_ref_un[:, num_spec])**2
+        with np.errstate(divide='ignore', invalid='ignore'):
+            inv_var_vec = np.where(var_vec > 1e-30, 1.0/var_vec, 0.0)
+        sy = np.diag(inv_var_vec)
+
+        # Extract current spectra (Lin and apparent reflectance)
+        l_incident = inc_fluo_corr[:, num_spec]
+        atm_func = {"Lin": l_incident}
+        farho = app_ref[:, num_spec]      
+
+
+        lmb = 1e-4
+
+        reflectance, sif, sif_unc = _l2b_regularized_cost_function_optimization(
+            wl_l,
+            farho,
+            xa_mean,
+            atm_func,
+            sa,
+            sy,
+            lmb,
+            l2b_wavelength_grid,
+            max_iter=15,
+        )
+        
+        # store
+        ref_sfm[:, num_spec] = reflectance
+        fluo_sfm[:, num_spec] = sif
+        fluo_un_sfm[:, num_spec] = sif_unc
+        #ref_un_sfm[:, num_spec] = rho_unc
+        #residual_sfm[:, num_spec] = residual
+
+    # Compute Final SIF Parameters
+    (sif_r_max, sif_r_wl, sif_o2b,
+     sif_fr_max, sif_fr_wl, sif_o2a,
+     sif_int, sif_o2b_un, sif_o2a_un
+     ) = sif_parms_flox(wl_l, fluo_sfm, fluo_un_sfm)
+
+    return (fluo_sfm, ref_sfm, fluo_un_sfm, ref_un_sfm, wv_out,
+            sif_r_max, sif_r_wl, sif_o2b,
+            sif_fr_max, sif_fr_wl, sif_o2a,
+            sif_int, sif_o2a_un, sif_o2b_un)
 
 
 def apply_SFM_FLOX_cov_sep(inc_fluo_corr, app_ref, app_ref_un, wl_l,
@@ -295,3 +403,7 @@ def apply_SFM_FLOX_cov_sep(inc_fluo_corr, app_ref, app_ref_un, wl_l,
             sif_r_max, sif_r_wl, sif_o2b,
             sif_fr_max, sif_fr_wl, sif_o2a,
             sif_int, sif_o2a_un, sif_o2b_un)
+
+
+
+
