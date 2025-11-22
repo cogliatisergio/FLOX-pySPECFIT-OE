@@ -504,8 +504,8 @@ def _l2b_regularized_cost_function_optimization(
     c_ex3_iter   = np.full((max_iter + 1), np.nan)
     LMgamma_iter = np.full((max_iter + 1), np.nan)
     fx_iter      = np.full((fx0.size, max_iter + 1), np.nan)
-    A_iter       = np.full((n_x, n_x, max_iter), np.nan)
-    K_iter       = np.full((wvl.size, n_x, max_iter), np.nan)
+    A_iter       = np.full((n_x, n_x, max_iter + 1), np.nan)
+    K_iter       = np.full((wvl.size, n_x, max_iter +1 ), np.nan)
     flag         = np.full((max_iter + 1), np.nan)
 
 
@@ -577,7 +577,7 @@ def _l2b_regularized_cost_function_optimization(
     i = -1
     LMgamma = 1e-3 * np.max(np.diag(k0.T @ sy @ k0))
     
-    while (c_ex1 >= 1e-3 or c_ex2 >= 1e-3 or c_ex3 >= 1e-6) and i <= max_iter:
+    while (c_ex1 >= 1e-3 or c_ex2 >= 1e-3 or c_ex3 >= 1e-6) and i < max_iter:
         i += 1
         Ci = k0.T @ sy @ k0 + LMgamma * D
         x1 = x0 + np.linalg.solve(Ci, k0.T @ sy @ (y - fx0))
@@ -621,9 +621,9 @@ def _l2b_regularized_cost_function_optimization(
             if i == 1:
                 increase_count = 0
 
-            rho = compute_LM_gain_ratio(x0, x1, fx0, y, c0, c1, LMgamma, D, k0, Sy)
+            rho = compute_LM_gain_ratio(x0, x1, fx0, y, c0, c1, LMgamma, D, k0, sy)
 
-            LMgamma, x1_reg, c1, fx1_reg, k1_reg, flag[i+1], skipIteration = LMgamma_update_TrustRegion(
+            LMgamma, x1_reg, c1, fx1_reg, k1_reg, flag[i], skipIteration = LMgamma_update_TrustRegion(
                 rho, LMgamma, x0, x1_reg, c0, c1, fx0, fx1_reg, k0, k1_reg, increase_count
             )
 
@@ -635,7 +635,7 @@ def _l2b_regularized_cost_function_optimization(
             )
 
         else:  # Press et al.
-            LMgamma, x1_reg, c1, fx1_reg, k1_reg, flag[i+1], skipIteration = LMgamma_update(
+            LMgamma, x1_reg, c1, fx1_reg, k1_reg, flag[i], skipIteration = LMgamma_update(
                 LMgamma, x0, x1_reg, c0, c1, fx0, fx1_reg, k0, k1_reg
             )
 
@@ -838,6 +838,8 @@ def MC_SIF_uncertainty_estimation(x, sx, wvl):
     return std_dev
 
 ######################################################################
+
+
 
 def _jacobian_calculation(func, x, epsilon=np.float64(1e-6)):
     num_parameters = len(x)

@@ -110,7 +110,7 @@ def FLOX_processing_master(data_path, uncertainty, cov):
          ) = FLOX_processing(
             inc_fluo=l_in,
             ref_fluo=l_up,
-            wl_l=wvl_sub,
+            wvl=wvl_sub,
             uncertainty=uncertainty,
             cov=cov
         )

@@ -3,3 +3,4 @@ scipy
 datetime
 pandas
 h5py
+tqdm
