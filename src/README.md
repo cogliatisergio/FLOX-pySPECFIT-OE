@@ -1,16 +1,35 @@
-# FLOX Processing Code
 
-The FLOX processing code consists of several initial routines that:
+# FLOX-pySPECFIT-OE
 
-- Initialize the processing environment
-- Read FLOX measurement files
-- Call routines for estimating the SIF (Solar-Induced Fluorescence) spectrum
+## Overview
+**FLOX-pySPECFIT-OE** is a Python implementation of the algorithm for estimating the **Solar-Induced Fluorescence (SIF) spectrum** from measurements of **incident radiance** and **apparent canopy reflectance**.
 
-These routines are directly derived from the L2B module of the FLEX-IPF (Instrument Processing Facility) developed for the ESA FLEX satellite mission.
+This code is the Python translation of the original **FLEX-L2PP** and **FLEX-IPF** modules, initially developed in **MATLAB®**, and adapted for processing **field spectral measurements**.
 
-In particular, the routine `sif_retrieval.py` has been adapted to:
+---
 
-- Incorporate a different forward model suitable for field FLOX data
-- Modify certain steps to handle ground-based measurements instead of satellite observations
+## Key Features
+- Implements the SIF retrieval algorithm as defined in the **ESA FLEX mission Instrument Processing Facility (IPF)**.
+- Adapted for **ground-based FLOX measurements**, ensuring accurate SIF estimation under field conditions.
+- Maintains the core logic of the original FLEX-IPF implementation while introducing flexibility for field data.
 
-This adaptation ensures accurate SIF retrieval for field conditions while maintaining the core logic from the original FLEX-IPF implementation.
+---
+
+## Processing Workflow
+The FLOX processing pipeline consists of:
+
+1. **Initialization**
+   - Set up the processing environment.
+2. **Data Input**
+   - Read FLOX measurement files.
+3. **SIF Retrieval**
+   - Estimate the SIF spectrum using routines derived from the FLEX-IPF L2B module.
+
+---
+
+## Adaptations in `sif_retrieval.py`
+- Integration of a **forward model** tailored for field FLOX data.
+- Adjustments to handle **ground-based measurements** instead of satellite observations.
+
+---
+
