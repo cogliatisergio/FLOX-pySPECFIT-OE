@@ -66,7 +66,7 @@ def load_inverse_covariance(cov):
 
 
 
-def load_uncertainties(uncertainty_file, wvl, inc_fluo, ref_fluo):
+def load_uncertainties(uncertainty_file, wvl, Lin_array, Lref_array):
     """
     Load and interpolate uncertainty data for FLOX measurements.
 
@@ -76,24 +76,24 @@ def load_uncertainties(uncertainty_file, wvl, inc_fluo, ref_fluo):
         Path to the .mat file containing uncertainty variables ("wl_unc", "L_down_unc", "L_up_unc").
     wvl : np.ndarray
         Wavelength vector for interpolation.
-    inc_fluo : np.ndarray
+    Lin_array : np.ndarray
         Incident radiance array.
-    ref_fluo : np.ndarray
+    Lref_array : np.ndarray
         Reflected radiance array.
 
     Returns
     -------
     tuple
-        flox_unc_inc_est : np.ndarray or None
+        Lin_unc : np.ndarray or None
             Estimated uncertainty for incident radiance (expanded to 2D).
-        flox_unc_ref_est : np.ndarray or None
+        Lref_unc : np.ndarray or None
             Estimated uncertainty for reflected radiance (expanded to 2D).
-        app_ref_un : np.ndarray or None
+        app_ref_unc : np.ndarray or None
             Estimated uncertainty for apparent reflectance.
     """
-    flox_unc_inc_est = None
-    flox_unc_ref_est = None
-    app_ref_un = None
+    Lin_unc = None
+    Lref_unc = None
+    app_ref_unc = None
 
     if uncertainty_file is not None and os.path.isfile(uncertainty_file):
         unc_data = loadmat(uncertainty_file)
@@ -116,21 +116,21 @@ def load_uncertainties(uncertainty_file, wvl, inc_fluo, ref_fluo):
                 if wl_unc_up.size > 1 else np.full_like(wvl, np.nan)
 
             # Expand to 2D
-            flox_unc_inc_est = flox_unc_inc[:, np.newaxis] * inc_fluo
-            flox_unc_ref_est = flox_unc_ref[:, np.newaxis] * ref_fluo
+            Lin_unc = flox_unc_inc[:, np.newaxis] * Lin_array
+            Lref_unc = flox_unc_ref[:, np.newaxis] * Lref_array
 
             # Apparent reflectance uncertainty
             with np.errstate(divide='ignore', invalid='ignore'):
-                part1 = (flox_unc_ref_est / inc_fluo) ** 2
-                part2 = ((ref_fluo * flox_unc_inc_est) ** 2) / (inc_fluo ** 4)
-                app_ref_un = np.sqrt(part1 + part2)
-                app_ref_un[np.isnan(app_ref_un)] = 0.0
+                part1 = (Lref_unc / Lin_array) ** 2
+                part2 = ((Lref_array * Lin_unc) ** 2) / (Lin_array ** 4)
+                app_ref_unc = np.sqrt(part1 + part2)
+                app_ref_unc[np.isnan(app_ref_unc)] = 0.0
         else:
             print(f"Warning: {uncertainty_file} missing required variables (wl_unc, L_down_unc, L_up_unc).")
     else:
         print("No 'uncertainty' file provided or file not found. Skipping uncertainty steps...")
 
-    return flox_unc_inc_est, flox_unc_ref_est, app_ref_un
+    return Lin_unc, Lref_unc, app_ref_unc
 
 
 
@@ -189,9 +189,11 @@ def sif_parms_flox(wl, sif, sif_un):
 
 
 
+
+
 def FLOX_processing(
-    inc_fluo,
-    ref_fluo,
+    Lin_array,
+    Lref_array,
     wvl,
     uncertainty=None,
     cov=None
@@ -199,8 +201,8 @@ def FLOX_processing(
     """Method to compute apparent reflectance and call SIF retrieval function for FLOX data.
 
     Args:
-        inc_FLUO (np.ndarray): Incident radiance in mW m^-2 sr^-1 nm^-1
-        ref_FLUO (np.ndarray): Reflected radiance in mW m^-2 sr^-1 nm^-1
+        Lin_array (np.ndarray): Incident radiance in mW m^-2 sr^-1 nm^-1
+        Lref_array (np.ndarray): Reflected radiance in mW m^-2 sr^-1 nm^-1
         wvl (np.ndarray): Wavelength vector in nm
         DOYdayfrac (np.ndarray): Day of year + fractional day
         UTC_time (list[str]): Timestamps
@@ -212,8 +214,8 @@ def FLOX_processing(
         list[np.ndarray]: 
             sif_array               # SIF spectrum computed using SFM method
             ref_array               # Reflectance spectrum computed using SFM method
-            sif_array_u             # SIF spectrum without SFM method
-            ref_array_u             # Reflectance spectrum without SFM method
+            sif_array_u             # SIF spectrum uncertainty
+            ref_array_u             # Reflectance spectrum uncertainty
             wvl_out                 # Output wavelength array
             sif_red_peak            # Maximum SIF at red peak
             sif_red_peak_wl         # Wavelength of maximum SIF at red peak
@@ -224,21 +226,22 @@ def FLOX_processing(
             sif_integrated          # Spectrally integrated SIF
             sif_o2a_uncertainty     # Uncertainty of SIF at O₂-A band
             sif_o2b_uncertainty     # Uncertainty of SIF at O₂-B band
+            app_ref_unc              # Uncertainty of apparent reflectance)
     """
 
     # Compute apparent reflectance
     with np.errstate(divide='ignore', invalid='ignore'):
-        app_ref = ref_fluo / inc_fluo
-        app_ref[np.isnan(app_ref)] = 0.0
-        app_ref[np.isinf(app_ref)] = 0.0
+        app_ref_array = Lref_array / Lin_array
+        app_ref_array[np.isnan(app_ref_array)] = 0.0
+        app_ref_array[np.isinf(app_ref_array)] = 0.0
 
     
     # Load uncertainties if provided
-    flox_unc_inc_est, flox_unc_ref_est, app_ref_un = load_uncertainties(uncertainty, wvl, inc_fluo, ref_fluo)
+    Lin_unc, Lref_unc, app_ref_unc = load_uncertainties(uncertainty, wvl, Lin_array, Lref_array)
      
-    # set app_ref_un to zero if uncertainties were not read
-    if app_ref_un is None:
-        app_ref_un = np.zeros_like(app_ref)
+    # set app_ref_unc to zero if uncertainties were not read
+    if app_ref_unc is None:
+        app_ref_unc = np.zeros_like(app_ref_array)
 
     
     # Load covariance matrix (sa) and mean state vector (xa_mean)
@@ -249,7 +252,7 @@ def FLOX_processing(
     # Perform SIF retrieval using FLEX-IPF algorithm adapted to FLOX data
 
     # Initialize output arrays
-    n_wvl, n_spectra = inc_fluo.shape
+    n_wvl, n_spectra = Lin_array.shape
 
     # Undersample the wavelength grid for L2B products
     l2b_wavelength_grid = np.copy(wvl)  # Wavelength grid for L2B processing
@@ -268,23 +271,23 @@ def FLOX_processing(
     # Main loop over the different spectra with progress bar
     for num_spec in tqdm(range(n_spectra), desc="Processing spectra", unit="spectra"):
 
-        # Build data covariance (diagonal from app_ref_un^2)
-        var_vec = (app_ref_un[:, num_spec])**2
+        # Build data covariance matrix sy (diagonal from app_ref_unc^2)
+        app_ref_variance = (app_ref_unc[:, num_spec])**2
         with np.errstate(divide='ignore', invalid='ignore'):
-            inv_var_vec = np.where(var_vec > 1e-30, 1.0/var_vec, 0.0)
-        sy = np.diag(inv_var_vec)
+            inv_app_ref_variance = np.where(app_ref_variance > 1e-30, 1.0/app_ref_variance, 0.0)
+        sy = np.diag(inv_app_ref_variance)
 
         # Extract current spectra (Lin and apparent reflectance)
-        l_incident = inc_fluo[:, num_spec]
-        atm_func = {"Lin": l_incident}
-        farho = app_ref[:, num_spec]      
+        Lin = Lin_array[:, num_spec]
+        atm_func = {"Lin": Lin}
+        app_ref = app_ref_array[:, num_spec]      
 
 
         lmb = 1e-4
 
         reflectance, sif, sif_unc = _l2b_regularized_cost_function_optimization(
             wvl,
-            farho,
+            app_ref,
             xa_mean,
             atm_func,
             sa,
@@ -321,8 +324,8 @@ def FLOX_processing(
     return(
         sif_array,               # SIF spectrum computed using SFM method
         ref_array,               # Reflectance spectrum computed using SFM method
-        sif_array_u,             # SIF spectrum without SFM method
-        ref_array_u,             # Reflectance spectrum without SFM method
+        sif_array_u,             # SIF spectrum uncertainty
+        ref_array_u,             # Reflectance spectrum uncertainty
         wvl_out,                 # Output wavelength array
         sif_red_peak,            # Maximum SIF at red peak
         sif_red_peak_wl,         # Wavelength of maximum SIF at red peak
@@ -332,5 +335,6 @@ def FLOX_processing(
         sif_o2a_band,            # SIF at O₂-A absorption band
         sif_integrated,          # Spectrally integrated SIF
         sif_o2a_uncertainty,     # Uncertainty of SIF at O₂-A band
-        sif_o2b_uncertainty      # Uncertainty of SIF at O₂-B band
+        sif_o2b_uncertainty,     # Uncertainty of SIF at O₂-B band
+        app_ref_unc              # Uncertainty of apparent reflectance)
     )
